@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# 数据文件
+data/raw/*
+data/processed/*
+data/embeddings/*
+!data/test_set/
+!data/**/.gitkeep
+
+# 模型文件
+models/*
+!models/.gitkeep
+
+# 日志
+logs/*
+*.log
+!logs/.gitkeep
+
+# 结果
+results/*
+!results/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 环境变量
+.env
+*.key
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes
+docker_*_data/
+docker_*_log/
