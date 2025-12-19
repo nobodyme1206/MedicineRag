@@ -27,7 +27,7 @@ _mongodb_instance = None
 _minio_instance = None
 
 
-def get_mongodb():
+def get_mongodb() -> Optional[Any]:
     """获取MongoDB单例实例"""
     global _mongodb_instance
     if _mongodb_instance is None:
@@ -43,7 +43,7 @@ def get_mongodb():
     return _mongodb_instance
 
 
-def get_minio():
+def get_minio() -> Optional[Any]:
     """获取MinIO单例实例"""
     global _minio_instance
     if _minio_instance is None:
@@ -67,7 +67,7 @@ def get_minio():
 class RAGSystem:
     """RAG问答系统（支持Rerank、混合检索、HyDE、Redis缓存、MongoDB日志、MinIO存储）"""
     
-    def __init__(self, use_rerank: bool = None, use_hybrid: bool = True, 
+    def __init__(self, use_rerank: bool = None, use_hybrid: bool = None, 
                  use_query_rewrite: bool = False, use_hyde: bool = None,
                  use_ensemble: bool = False, use_cache: bool = True):
         """
@@ -85,7 +85,9 @@ class RAGSystem:
         
         # 配置功能开关
         self.use_rerank = use_rerank if use_rerank is not None else USE_RERANK
-        self.use_hybrid = use_hybrid
+        # BM25效果差(MRR=0.57)且慢(1825ms)，默认禁用混合检索
+        from config.config import USE_HYBRID_SEARCH
+        self.use_hybrid = use_hybrid if use_hybrid is not None else USE_HYBRID_SEARCH
         self.use_query_rewrite = use_query_rewrite
         self.use_hyde = use_hyde if use_hyde is not None else getattr(__import__('config.config', fromlist=['USE_HYDE']), 'USE_HYDE', False)
         self.use_ensemble = use_ensemble
@@ -128,9 +130,9 @@ class RAGSystem:
                 logger.warning(f"Rerank模型加载失败，将不使用Rerank: {e}")
                 self.use_rerank = False
         
-        # 5. 初始化混合检索（如果启用）
+        # 5. 初始化混合检索（默认禁用，BM25效果差）
         if self.use_hybrid:
-            logger.info("初始化混合检索器...")
+            logger.info("初始化混合检索器（BM25+向量）...")
             try:
                 from src.retrieval.hybrid_searcher import HybridSearcher
                 self.hybrid_searcher = HybridSearcher()
@@ -138,6 +140,8 @@ class RAGSystem:
             except Exception as e:
                 logger.warning(f"混合检索器初始化失败: {e}")
                 self.use_hybrid = False
+        else:
+            logger.info("跳过混合检索（BM25已禁用，使用纯向量+Rerank）")
         
         # 6. 初始化查询改写器（默认启用本地增强，不调用LLM）
         logger.info("初始化查询改写器...")

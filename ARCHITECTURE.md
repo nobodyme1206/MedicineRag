@@ -1,13 +1,13 @@
-# 医学RAG系统 - 混合架构
+# 医学RAG系统 - 架构文档
 
 ## 架构概览
 
 ```
-┌─────────────────┐     ┌────────────────────┐     ┌─────────────────────┐
-│   Vue 3 前端    │────▶│  Java Spring Boot  │────▶│  Python ML 微服务   │
-│   (Vite)        │     │  (API Gateway)     │     │  (FastAPI)          │
-│   Port: 5173    │     │  Port: 8080        │     │  Port: 7861         │
-└─────────────────┘     └────────────────────┘     └─────────────────────┘
+┌─────────────────┐     ┌─────────────────────┐
+│   Vue 3 前端    │────▶│  Python FastAPI     │
+│   (Vite)        │     │  (RAG + Agent)      │
+│   Port: 5173    │     │  Port: 7861         │
+└─────────────────┘     └─────────────────────┘
                                 │
                     ┌───────────┼───────────┐
                     ▼           ▼           ▼
@@ -21,24 +21,15 @@
 - Vue 3 + Composition API
 - Vite 构建工具
 - Element Plus UI组件库
-- Pinia 状态管理
 - Vue Router 路由
 - Axios HTTP客户端
 
-### Java后端 (backend/)
-- Spring Boot 3.2
-- Spring WebFlux (WebClient)
-- Spring Data Redis
-- Spring Data MongoDB
-- SpringDoc OpenAPI (Swagger)
-- Lombok
-
-### Python ML微服务 (src/)
-- FastAPI
-- Milvus 向量数据库
-- Sentence Transformers (Embedding)
-- BGE Reranker
-- OpenAI API (LLM)
+### Python后端 (src/)
+- FastAPI - 高性能异步Web框架
+- Milvus - 向量数据库
+- Sentence Transformers - Embedding模型
+- BGE Reranker - 重排序模型
+- OpenAI API - LLM调用
 
 ## 目录结构
 
@@ -53,54 +44,35 @@ project/
 │   ├── package.json
 │   └── vite.config.js
 │
-├── backend/                  # Java Spring Boot
-│   ├── src/main/java/com/medical/rag/
-│   │   ├── controller/      # REST控制器
-│   │   ├── service/         # 业务服务
-│   │   ├── dto/             # 数据传输对象
-│   │   └── config/          # 配置类
-│   ├── src/main/resources/
-│   │   └── application.yml
-│   └── pom.xml
-│
-├── src/                      # Python ML微服务
+├── src/                      # Python后端
 │   ├── api/                 # FastAPI接口
-│   ├── rag/                 # RAG核心
-│   ├── agent/               # Agent实现
-│   └── retrieval/           # 检索模块
+│   ├── rag/                 # RAG核心模块
+│   ├── agent/               # Adaptive RAG Agent
+│   ├── retrieval/           # 检索模块
+│   ├── embedding/           # 向量化模块
+│   ├── caching/             # Redis缓存
+│   └── storage/             # 存储模块
 │
-└── docker/                   # Docker配置
+├── config/                   # 配置文件
+│   ├── docker/              # Docker配置
+│   └── config.py            # 系统配置
+│
+└── tests/                    # 测试文件
 ```
 
 ## 启动方式
 
-### 方式一：使用启动脚本
-```bash
-# Windows
-start-services.bat
-```
-
-### 方式二：手动启动
-
 1. **启动基础服务**
 ```bash
-cd docker
-docker-compose up -d
+docker compose -f config/docker/docker-compose.yml up -d
 ```
 
-2. **启动Python ML微服务**
+2. **启动Python后端**
 ```bash
-set NO_PROXY=localhost,127.0.0.1
-python main.py --api
+python -m src.api.main
 ```
 
-3. **启动Java后端**
-```bash
-cd backend
-mvn spring-boot:run
-```
-
-4. **启动Vue前端**
+3. **启动Vue前端**
 ```bash
 cd frontend
 npm install
@@ -109,35 +81,37 @@ npm run dev
 
 ## API端点
 
-### Java后端 (http://localhost:8080)
+### FastAPI后端 (http://localhost:7861)
 | 方法 | 路径 | 描述 |
 |------|------|------|
 | GET | /health | 健康检查 |
 | POST | /api/v1/ask | RAG问答 |
-| POST | /api/v1/agent | Agent问答 |
+| POST | /api/v1/ask/batch | 批量问答 |
+| POST | /api/v1/agent | Agent智能问答 |
 | POST | /api/v1/retrieve | 文献检索 |
 | GET | /api/v1/stats | 系统统计 |
+| GET | /api/v1/cache/stats | 缓存统计 |
 
-### Swagger文档
-http://localhost:8080/swagger-ui.html
+### API文档
+http://localhost:7861/docs
 
 ## 数据流
 
 1. 用户在Vue前端输入问题
-2. 前端通过Axios发送请求到Java后端
-3. Java后端进行参数校验、日志记录
-4. Java后端通过WebClient调用Python ML微服务
-5. Python执行RAG/Agent逻辑，调用Milvus检索
-6. 结果逐层返回到前端展示
+2. 前端通过Axios发送请求到FastAPI后端
+3. FastAPI执行RAG/Agent逻辑
+4. 调用Milvus进行向量检索
+5. 调用LLM生成答案
+6. 结果返回到前端展示
 
 ## 扩展建议
 
-### Java后端可扩展功能
-- 用户认证 (Spring Security + JWT)
-- 请求限流 (Bucket4j)
-- 缓存优化 (Spring Cache + Redis)
+### 后端可扩展功能
+- 用户认证 (FastAPI + JWT)
+- 请求限流 (slowapi)
+- 分布式部署 (Gunicorn + Nginx)
 - 日志审计
-- 多租户支持
+- Prometheus监控
 
 ### 前端可扩展功能
 - 用户登录/注册

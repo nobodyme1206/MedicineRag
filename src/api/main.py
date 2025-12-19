@@ -281,7 +281,7 @@ async def ask_question(request: QuestionRequest):
         
     except Exception as e:
         logger.error(f"问答失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="问答服务暂时不可用，请稍后重试")
 
 
 @app.post("/api/v1/ask/batch", response_model=BatchAnswerResponse, tags=["QA"])
@@ -304,16 +304,10 @@ async def ask_batch_questions(request: BatchQuestionRequest):
     success_count = 0
     failed_count = 0
     
-    # 初始化语义缓存
+    # 复用RAG系统的语义缓存，避免重复初始化
     semantic_cache = None
-    if request.use_semantic_cache:
-        try:
-            from src.caching.redis_cache import RedisCache, SemanticCache
-            redis_cache = RedisCache()
-            if redis_cache.is_connected:
-                semantic_cache = SemanticCache(redis_cache)
-        except Exception as e:
-            logger.warning(f"语义缓存初始化失败: {e}")
+    if request.use_semantic_cache and rag_system.semantic_cache:
+        semantic_cache = rag_system.semantic_cache
     
     async def process_question(question: str, index: int) -> Dict:
         """处理单个问题"""
@@ -442,8 +436,7 @@ async def retrieve_documents(request: RetrievalRequest):
     try:
         results = rag_system.retrieve(
             request.query, 
-            top_k=request.top_k,
-            method=request.method
+            top_k=request.top_k
         )
         
         latency = (time.time() - start_time) * 1000
@@ -456,18 +449,22 @@ async def retrieve_documents(request: RetrievalRequest):
         
     except Exception as e:
         logger.error(f"检索失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="检索服务暂时不可用，请稍后重试")
 
 
 @app.post("/api/v1/rewrite", tags=["Utils"])
 async def rewrite_query(query: str = Query(..., min_length=1)):
     """查询改写接口"""
     try:
-        from src.rag.query_rewriter import QueryRewriter
+        # 复用RAG系统的查询改写器
+        if rag_system and rag_system.query_rewriter:
+            rewriter = rag_system.query_rewriter
+        else:
+            from src.rag.query_rewriter import QueryRewriter
+            rewriter = QueryRewriter()
         
-        rewriter = QueryRewriter()
-        rewritten = rewriter.rewrite(query)
-        expanded = rewriter.expand_query(query)
+        rewritten = rewriter.rewrite(query) if hasattr(rewriter, 'rewrite') else query
+        expanded = rewriter.expand_query(query) if hasattr(rewriter, 'expand_query') else []
         
         return {
             "original": query,
@@ -477,7 +474,7 @@ async def rewrite_query(query: str = Query(..., min_length=1)):
         
     except Exception as e:
         logger.error(f"查询改写失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="查询改写服务暂时不可用")
 
 
 @app.delete("/api/v1/session/{session_id}", tags=["Session"])
@@ -562,7 +559,7 @@ async def get_cache_stats():
         return rag_system.get_cache_stats()
     except Exception as e:
         logger.error(f"获取缓存统计失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="获取缓存统计失败")
 
 
 @app.post("/api/v1/cache/prewarm", tags=["Cache"])
@@ -635,7 +632,7 @@ async def clear_cache(cache_type: str = Query(default="all", pattern="^(all|sema
         
     except Exception as e:
         logger.error(f"清空缓存失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="清空缓存失败")
 
 
 # ==================== Agent API ====================
@@ -645,7 +642,7 @@ async def agent_query(request: AgentRequest):
     """
     Agent智能问答接口
     
-    使用LlamaIndex Agent，支持医学文献检索和问答
+    使用Adaptive RAG Agent，支持智能路由、查询分解、自我反思
     """
     if not medical_agent:
         raise HTTPException(status_code=503, detail="Agent未就绪")
@@ -656,15 +653,15 @@ async def agent_query(request: AgentRequest):
         response = AgentResponse(
             query=result["query"],
             answer=result["answer"],
-            steps=None,  # LlamaIndex Agent 不返回步骤
+            steps=result.get("steps"),
             num_steps=result.get("num_sources", 0),
-            success=result["success"]
+            success=result.get("success", True)
         )
         return response
         
     except Exception as e:
         logger.error(f"Agent执行失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="智能问答服务暂时不可用，请稍后重试")
 
 
 @app.get("/api/v1/agent/tools", tags=["Agent"])

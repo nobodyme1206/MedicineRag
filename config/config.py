@@ -32,7 +32,8 @@ def get_env(key: str, default=None, cast_type=str):
 # ====================
 # 基础路径配置
 # ====================
-BASE_DIR = Path(get_env("BASE_DIR", "d:/桌面/data-course"))
+# 使用相对路径，基于项目根目录
+BASE_DIR = Path(get_env("BASE_DIR", str(Path(__file__).parent.parent.resolve())))
 DATA_DIR = BASE_DIR / "data"
 RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
@@ -125,9 +126,9 @@ SPARK_EXECUTOR_MEMORY = get_env("SPARK_EXECUTOR_MEMORY", "4g")
 RETRIEVAL_TOP_K = 15
 RERANK_TOP_K = 20
 SIMILARITY_THRESHOLD = 0.4
-VECTOR_SEARCH_WEIGHT = 0.6
-BM25_SEARCH_WEIGHT = 0.4
-# 评估结果显示不使用HyDE效果更好 (Hybrid_RAG MRR=0.93 vs HyDE配置)
+# 评估结果: BM25 MRR=0.57 延迟1825ms，Vector MRR=0.897 延迟33ms
+# BM25效果差且慢，已禁用混合检索，使用纯向量+Rerank
+USE_HYBRID_SEARCH = get_env("USE_HYBRID_SEARCH", False, bool)
 USE_HYDE = get_env("USE_HYDE", False, bool)
 
 # ====================

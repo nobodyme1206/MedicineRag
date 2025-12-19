@@ -249,25 +249,6 @@ class TestMilvusIntegration:
             pytest.skip(f"Milvus不可用: {e}")
 
 
-class TestKafkaIntegration:
-    """Kafka集成测试"""
-    
-    @pytest.mark.slow
-    def test_kafka_connection(self):
-        """测试Kafka连接"""
-        try:
-            from kafka import KafkaProducer
-            from config.config import KAFKA_BOOTSTRAP_SERVERS
-            
-            producer = KafkaProducer(
-                bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
-                api_version_auto_timeout_ms=5000
-            )
-            producer.close()
-        except Exception as e:
-            pytest.skip(f"Kafka不可用: {e}")
-
-
 class TestMongoDBIntegration:
     """MongoDB集成测试"""
     
@@ -276,9 +257,13 @@ class TestMongoDBIntegration:
         """测试MongoDB连接"""
         try:
             from pymongo import MongoClient
-            from config.config import MONGODB_URI
+            from config.config import MONGODB_HOST, MONGODB_PORT
             
-            client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
+            client = MongoClient(
+                host=MONGODB_HOST, 
+                port=MONGODB_PORT, 
+                serverSelectionTimeoutMS=5000
+            )
             client.server_info()
             client.close()
         except Exception as e:

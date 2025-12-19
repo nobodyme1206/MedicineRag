@@ -8,6 +8,16 @@ const api = axios.create({
   }
 })
 
+// 统一错误处理
+api.interceptors.response.use(
+  response => response,
+  error => {
+    const message = error.response?.data?.detail || error.message || '请求失败'
+    console.error('API Error:', message)
+    return Promise.reject(error)
+  }
+)
+
 // RAG 问答（支持会话）
 export const askQuestion = (question, sessionId = null, useRewrite = false) => {
   return api.post('/v1/ask', {
@@ -25,7 +35,7 @@ export const askBatch = (questions, useSemanticCache = true) => {
   })
 }
 
-// Agent 问答
+// Agent 问答 - 统一命名，同时导出两个名称保持兼容
 export const agentQuery = (query, maxSteps = 5, verbose = true) => {
   return api.post('/v1/agent', {
     query,
@@ -33,6 +43,9 @@ export const agentQuery = (query, maxSteps = 5, verbose = true) => {
     verbose
   })
 }
+
+// 别名，供 AgentChat.vue 使用
+export const agentChat = agentQuery
 
 // 文献检索
 export const searchLiterature = (query, topK = 10, method = 'hybrid') => {
