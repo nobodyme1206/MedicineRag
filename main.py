@@ -70,41 +70,36 @@ def run_vector_db_setup():
     milvus_main()
 
 
-def run_evaluation(mode: str = "full", scale_factor: int = 10):
+def run_evaluation(mode: str = "full", samples: int = 200):
     """步骤5: 系统评估"""
     logger.info("\n" + "="*60)
-    logger.info("步骤5: RAG系统评估")
+    logger.info("步骤5: 系统评估")
     logger.info("="*60)
     
-    from src.evaluation.unified_evaluator import UnifiedEvaluator
-    evaluator = UnifiedEvaluator()
+    results = {}
     
     if mode == "rag":
-        results = evaluator.evaluate_rag_retrieval()
-    elif mode == "storage":
-        results = evaluator.evaluate_storage_performance()
-    elif mode == "pyspark":
-        results = evaluator.evaluate_pyspark_processing(scale_factor=scale_factor)
+        from src.evaluation.rag_evaluator import RAGEvaluator
+        evaluator = RAGEvaluator()
+        evaluator.load_pubmedqa(max_samples=samples)
+        results = evaluator.run_evaluation()
+    elif mode == "distributed":
+        from src.evaluation.distributed_evaluator import DistributedEvaluator
+        evaluator = DistributedEvaluator()
+        results = evaluator.run_evaluation()
     else:
-        results = evaluator.run_full_evaluation()
-    
-    if isinstance(results, dict) and 'overall_score' in results:
-        logger.info(f"综合评分: {results['overall_score']}/100")
+        # 完整评估：RAG + 分布式计算
+        from src.evaluation.rag_evaluator import RAGEvaluator
+        from src.evaluation.distributed_evaluator import DistributedEvaluator
+        
+        rag_eval = RAGEvaluator()
+        rag_eval.load_pubmedqa(max_samples=samples)
+        results["rag"] = rag_eval.run_evaluation()
+        
+        dist_eval = DistributedEvaluator()
+        results["distributed"] = dist_eval.run_evaluation()
     
     return results
-
-
-def run_expand_data(scale_factor: int = 10):
-    """扩展数据集用于大数据测试"""
-    logger.info("\n" + "="*60)
-    logger.info(f"📊 扩展数据集 ({scale_factor}x)")
-    logger.info("="*60)
-    
-    from src.evaluation.data_scaler import create_scaled_dataset
-    path = create_scaled_dataset(scale_factor=scale_factor)
-    
-    logger.info(f"✅ 扩展数据集已创建: {path}")
-    return path
 
 
 def run_rebuild_database(resume: bool = False, batch_size: int = 128):
@@ -123,13 +118,23 @@ def run_rebuild_database(resume: bool = False, batch_size: int = 128):
 
 
 def run_web_interface():
-    """步骤6: 启动Web界面"""
+    """步骤6: 启动Web界面（Gradio）"""
     logger.info("\n" + "="*60)
-    logger.info("步骤6: 启动Web界面")
+    logger.info("步骤6: 启动Web界面 (Gradio)")
     logger.info("="*60)
     
     from web.app import main as web_main
     web_main()
+
+
+def run_api_server():
+    """启动FastAPI服务"""
+    logger.info("\n" + "="*60)
+    logger.info("🚀 启动FastAPI服务")
+    logger.info("="*60)
+    
+    from src.api.main import main as api_main
+    api_main()
 
 
 def run_full_pipeline():
@@ -169,7 +174,7 @@ def run_spark_cluster():
     """启动Spark集群（Docker）"""
     logger.info("🚀 启动Spark集群...")
     import subprocess
-    subprocess.run(["docker", "compose", "-f", "docker/docker-compose-spark.yml", "up", "-d"])
+    subprocess.run(["docker", "compose", "-f", "config/docker/docker-compose-spark.yml", "up", "-d"])
     logger.info("✅ Spark集群已启动")
     logger.info("   Master UI: http://localhost:8080")
     logger.info("   Master URL: spark://localhost:7077")
@@ -229,6 +234,25 @@ def run_cache_prewarm():
     logger.info(f"✅ 缓存预热完成: {manager.get_stats()}")
 
 
+def run_monitoring():
+    """启动监控服务"""
+    logger.info("📊 启动监控服务...")
+    import subprocess
+    
+    result = subprocess.run([
+        "docker", "compose", 
+        "-f", "config/docker/docker-compose-monitoring.yml", 
+        "up", "-d"
+    ])
+    
+    if result.returncode == 0:
+        logger.info("✅ 监控服务已启动")
+        logger.info("   Prometheus: http://localhost:9091")
+        logger.info("   Grafana: http://localhost:3000 (admin/admin)")
+    else:
+        logger.error("❌ 监控服务启动失败")
+
+
 # ==================== Kafka + Airflow 功能 ====================
 
 def run_kafka_services():
@@ -243,7 +267,7 @@ def run_kafka_services():
     # 启动Kafka + Airflow
     result = subprocess.run([
         "docker", "compose", 
-        "-f", "docker/docker-compose-kafka-airflow.yml", 
+        "-f", "config/docker/docker-compose-kafka-airflow.yml", 
         "up", "-d"
     ])
     
@@ -348,15 +372,11 @@ def main():
     parser.add_argument("--resume", action="store_true", help="断点续传模式(配合--rebuild)")
     parser.add_argument("--batch-size", type=int, default=128, help="批次大小(默认128)")
     
-    # 评估
-    parser.add_argument("--eval", action="store_true", help="完整系统评估")
-    parser.add_argument("--eval-rag", action="store_true", help="仅RAG检索评估")
-    parser.add_argument("--eval-storage", action="store_true", help="仅存储性能评估")
-    parser.add_argument("--eval-pyspark", action="store_true", help="PySpark大数据处理评估")
-    
-    # 数据扩展
-    parser.add_argument("--expand-data", action="store_true", help="扩展数据集用于大数据测试")
-    parser.add_argument("--scale", type=int, default=10, help="数据扩展倍数(默认10x)")
+    # 评估（两个模块：RAG + 分布式计算）
+    parser.add_argument("--eval", action="store_true", help="完整系统评估(RAG+分布式)")
+    parser.add_argument("--eval-rag", action="store_true", help="RAG检索评估(基于PubMedQA)")
+    parser.add_argument("--eval-distributed", action="store_true", help="分布式计算评估(Spark/Milvus/Redis/Kafka/MongoDB)")
+    parser.add_argument("--samples", type=int, default=200, help="RAG评估样本数(默认200)")
     
     # Spark增强功能
     parser.add_argument("--spark-cluster", action="store_true", help="启动Spark集群(Docker)")
@@ -364,6 +384,7 @@ def main():
     parser.add_argument("--use-cluster", action="store_true", help="使用Spark集群模式")
     parser.add_argument("--incremental", action="store_true", help="启动增量索引")
     parser.add_argument("--cache-prewarm", action="store_true", help="预热Redis缓存")
+    parser.add_argument("--monitoring", action="store_true", help="启动监控服务(Prometheus+Grafana)")
     
     # Kafka + Airflow 功能
     parser.add_argument("--kafka-start", action="store_true", help="启动Kafka+Airflow服务")
@@ -375,7 +396,8 @@ def main():
     parser.add_argument("--kafka-stats", action="store_true", help="显示Kafka统计")
     
     # Web界面
-    parser.add_argument("--web", action="store_true", help="启动Web界面")
+    parser.add_argument("--web", action="store_true", help="启动Web界面(Gradio)")
+    parser.add_argument("--api", action="store_true", help="启动FastAPI服务")
     
     args = parser.parse_args()
     
@@ -386,19 +408,21 @@ def main():
         print("常用命令:")
         print("  python main.py --full           # 运行完整Pipeline")
         print("  python main.py --rebuild        # 重建向量数据库")
-        print("  python main.py --eval           # 完整系统评估")
-        print("  python main.py --web            # 启动Web界面")
+        print("  python main.py --web            # 启动Web界面(Gradio)")
+        print("  python main.py --api            # 启动FastAPI服务")
+        print("\n评估命令:")
+        print("  python main.py --eval               # 完整评估(RAG+分布式)")
+        print("  python main.py --eval-rag           # RAG评估(BM25/Vector/Hybrid)")
+        print("  python main.py --eval-distributed   # 分布式评估(Spark/Milvus/Redis/Kafka/MongoDB)")
+        print("  python main.py --eval-rag --samples 100  # 指定测试样本数")
         print("\nSpark增强:")
         print("  python main.py --spark-cluster  # 启动Spark集群")
         print("  python main.py --spark-embed    # Spark分布式向量化")
-        print("  python main.py --incremental    # 增量索引")
-        print("  python main.py --cache-prewarm  # 预热缓存")
         print("\nKafka + Airflow:")
         print("  python main.py --kafka-start    # 启动Kafka+Airflow服务")
-        print("  python main.py --kafka-topics   # 创建Kafka Topics")
-        print("  python main.py --kafka-crawl    # Kafka集成爬虫")
-        print("  python main.py --kafka-consumer processor  # 启动处理消费者")
         print("  python main.py --kafka-pipeline # Kafka完整Pipeline")
+        print("\n监控:")
+        print("  python main.py --monitoring     # 启动Prometheus+Grafana监控")
         return
     
     # 执行对应步骤
@@ -424,16 +448,19 @@ def main():
         run_incremental_index(use_spark=args.use_cluster)
     elif args.cache_prewarm:
         run_cache_prewarm()
+    elif args.monitoring:
+        run_monitoring()
     elif args.full:
         run_full_pipeline()
     elif args.rebuild:
         run_rebuild_database(resume=args.resume, batch_size=args.batch_size)
-    elif args.eval or args.eval_rag or args.eval_storage or args.eval_pyspark:
-        if args.eval_pyspark:
-            run_evaluation("pyspark", scale_factor=args.scale)
+    elif args.eval or args.eval_rag or args.eval_distributed:
+        if args.eval_rag:
+            run_evaluation("rag", samples=args.samples)
+        elif args.eval_distributed:
+            run_evaluation("distributed")
         else:
-            mode = "rag" if args.eval_rag else "storage" if args.eval_storage else "full"
-            run_evaluation(mode)
+            run_evaluation("full", samples=args.samples)
     else:
         if args.collect:
             run_data_collection(
@@ -449,6 +476,8 @@ def main():
             run_vector_db_setup()
         if args.web:
             run_web_interface()
+        if args.api:
+            run_api_server()
 
 
 if __name__ == "__main__":

@@ -631,6 +631,173 @@ class AsyncPubMedCrawler:
 PubMedCrawler = AsyncPubMedCrawler
 
 
+async def fetch_articles_by_pmids(pmids: List[str], email: str = None, api_key: str = None) -> List[Dict]:
+    """
+    根据PMID列表下载文章（用于补充PubMedQA测试集文档）
+    
+    Args:
+        pmids: PMID列表
+        email: PubMed API邮箱
+        api_key: PubMed API密钥
+        
+    Returns:
+        文章列表
+    """
+    email = email or PUBMED_EMAIL
+    api_key = api_key or PUBMED_API_KEY
+    
+    logger.info(f"📥 下载 {len(pmids)} 篇文章...")
+    
+    articles = []
+    batch_size = 100
+    
+    connector = aiohttp.TCPConnector(limit=10)
+    timeout = aiohttp.ClientTimeout(total=60)
+    
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        for i in range(0, len(pmids), batch_size):
+            batch_ids = pmids[i:i + batch_size]
+            
+            params = {
+                "db": "pubmed",
+                "id": ",".join(batch_ids),
+                "rettype": "xml",
+                "retmode": "xml",
+                "email": email
+            }
+            if api_key:
+                params["api_key"] = api_key
+            
+            try:
+                async with session.get(PUBMED_FETCH_URL, params=params) as resp:
+                    if resp.status == 200:
+                        xml_text = await resp.text()
+                        batch_articles = _parse_xml_simple(xml_text)
+                        articles.extend(batch_articles)
+                        logger.info(f"  进度: {min(i + batch_size, len(pmids))}/{len(pmids)}")
+                    else:
+                        logger.warning(f"HTTP {resp.status}")
+            except Exception as e:
+                logger.error(f"下载失败: {e}")
+            
+            await asyncio.sleep(0.2)  # 速率限制
+    
+    logger.info(f"✅ 下载完成: {len(articles)} 篇")
+    return articles
+
+
+def _parse_xml_simple(xml_text: str) -> List[Dict]:
+    """简化的XML解析"""
+    articles = []
+    try:
+        root = ET.fromstring(xml_text)
+        for elem in root.findall('.//PubmedArticle'):
+            pmid_elem = elem.find('.//PMID')
+            if pmid_elem is None:
+                continue
+            pmid = pmid_elem.text
+            
+            title_elem = elem.find('.//ArticleTitle')
+            title = title_elem.text if title_elem is not None else ""
+            
+            abstract_parts = []
+            for abs_elem in elem.findall('.//AbstractText'):
+                if abs_elem.text:
+                    abstract_parts.append(abs_elem.text)
+            abstract = " ".join(abstract_parts)
+            
+            if abstract:
+                articles.append({
+                    'pmid': pmid,
+                    'title': title or "",
+                    'abstract': abstract,
+                    'full_text': f"{title}\n\n{abstract}",
+                    'topic': 'pubmedqa_test'
+                })
+    except Exception as e:
+        logger.warning(f"XML解析错误: {e}")
+    return articles
+
+
+def download_pubmedqa_articles():
+    """下载PubMedQA测试集对应的文章并添加到语料库"""
+    from config.config import DATA_DIR, PROCESSED_DATA_DIR
+    import pandas as pd
+    
+    # 1. 加载测试集PMID
+    test_file = DATA_DIR / "test_set" / "pubmedqa_test.json"
+    if not test_file.exists():
+        logger.error(f"测试集不存在: {test_file}")
+        return
+    
+    with open(test_file, 'r', encoding='utf-8') as f:
+        test_data = json.load(f)
+    
+    test_pmids = set()
+    for item in test_data:
+        test_pmids.update(item.get('relevant_doc_ids', []))
+    
+    logger.info(f"测试集PMID数量: {len(test_pmids)}")
+    
+    # 2. 检查语料库中已有的PMID
+    parquet_file = PROCESSED_DATA_DIR / "parquet" / "medical_chunks.parquet"
+    if parquet_file.exists():
+        df = pd.read_parquet(parquet_file, columns=['pmid'])
+        existing_pmids = set(df['pmid'].unique())
+        missing_pmids = test_pmids - existing_pmids
+        logger.info(f"语料库已有: {len(test_pmids - missing_pmids)}, 缺失: {len(missing_pmids)}")
+    else:
+        missing_pmids = test_pmids
+        logger.info(f"语料库不存在，需下载全部: {len(missing_pmids)}")
+    
+    if not missing_pmids:
+        logger.info("✅ 所有测试集文档已存在于语料库中")
+        return
+    
+    # 3. 下载缺失的文章
+    articles = asyncio.run(fetch_articles_by_pmids(list(missing_pmids)))
+    
+    if not articles:
+        logger.warning("未能下载任何文章")
+        return
+    
+    # 4. 切分并添加到语料库
+    from src.data_processing.data_processor import TextChunker
+    chunker = TextChunker()
+    
+    new_chunks = []
+    for article in articles:
+        pmid = article['pmid']
+        text = article['full_text']
+        chunks = chunker.chunk(text)
+        
+        for i, chunk in enumerate(chunks):
+            new_chunks.append({
+                'id': f"{pmid}_{i}",
+                'pmid': pmid,
+                'chunk_id': f"{pmid}_{i}",
+                'chunk_text': chunk,
+                'title': article.get('title', ''),
+                'topic': 'pubmedqa_test',
+                'content': chunk
+            })
+    
+    logger.info(f"生成 {len(new_chunks)} 个新chunks")
+    
+    # 5. 合并到现有parquet
+    if parquet_file.exists():
+        df_existing = pd.read_parquet(parquet_file)
+        df_new = pd.DataFrame(new_chunks)
+        df_merged = pd.concat([df_existing, df_new], ignore_index=True)
+    else:
+        df_merged = pd.DataFrame(new_chunks)
+    
+    df_merged.to_parquet(parquet_file, index=False, compression='snappy')
+    logger.info(f"✅ 语料库已更新: {len(df_merged)} chunks")
+    
+    return len(new_chunks)
+
+
 def main():
     """主函数"""
     import argparse
@@ -638,7 +805,12 @@ def main():
     parser.add_argument("--workers", type=int, default=3, help="并发主题数")
     parser.add_argument("--concurrent", type=int, default=10, help="并发请求数")
     parser.add_argument("--clear", action="store_true", help="清除checkpoint")
+    parser.add_argument("--pubmedqa", action="store_true", help="下载PubMedQA测试集文档")
     args = parser.parse_args()
+    
+    if args.pubmedqa:
+        download_pubmedqa_articles()
+        return
     
     crawler = AsyncPubMedCrawler(max_concurrent=args.concurrent)
     

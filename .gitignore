@@ -54,3 +54,16 @@ Thumbs.db
 # Docker volumes
 docker_*_data/
 docker_*_log/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Backend Java
+backend/target/
+*.class
+*.jar
+
+# Cache
+*.pkl
+.cache/

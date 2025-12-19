@@ -1,0 +1,24 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: medical-rag-backend
+  
+  data:
+    redis:
+      host: localhost
+      port: 6379
+    mongodb:
+      uri: mongodb://localhost:27017/medical_rag
+
+# Python ML微服务地址
+python:
+  ml-service:
+    url: http://localhost:7861
+
+# 日志配置
+logging:
+  level:
+    com.medical: DEBUG
+    org.springframework.web: INFO

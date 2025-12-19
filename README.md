@@ -74,7 +74,7 @@ cp .env.example .env
 
 ```bash
 # 启动所有Docker服务（Milvus, Redis, MongoDB, Spark等）
-docker compose -f docker/docker-compose.yml up -d
+docker compose -f config/docker/docker-compose.yml up -d
 ```
 
 ### 4. 运行Pipeline
@@ -180,13 +180,13 @@ pytest tests/test_core.py::TestTextEmbedder -v
 
 ```bash
 # 一键启动所有服务
-docker compose -f docker/docker-compose.yml up -d
+docker compose -f config/docker/docker-compose.yml up -d
 
 # 查看服务状态
-docker compose -f docker/docker-compose.yml ps
+docker compose -f config/docker/docker-compose.yml ps
 
 # 停止服务
-docker compose -f docker/docker-compose.yml down
+docker compose -f config/docker/docker-compose.yml down
 ```
 
 服务端口：

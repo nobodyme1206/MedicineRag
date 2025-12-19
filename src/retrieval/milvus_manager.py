@@ -31,21 +31,37 @@ class MilvusManager:
             host: Milvus服务地址
             port: Milvus服务端口
         """
-        logger.info(f"连接Milvus: {host}:{port}")
-        
+        self.host = host
+        self.port = port
+        self.collection = None
+        self._connect()
+    
+    def _connect(self):
+        """建立Milvus连接"""
+        logger.info(f"连接Milvus: {self.host}:{self.port}")
         try:
+            # 先断开已有连接
+            try:
+                connections.disconnect("default")
+            except:
+                pass
+            
             connections.connect(
                 alias="default",
-                host=host,
-                port=port
+                host=self.host,
+                port=self.port
             )
             logger.info("✅ Milvus连接成功")
         except Exception as e:
             logger.error(f"❌ Milvus连接失败: {e}")
             logger.info("请确保Milvus服务已启动 (docker-compose up -d)")
             raise
-        
-        self.collection = None
+    
+    def _ensure_connection(self):
+        """确保连接有效 - 简化版，不频繁检查"""
+        # 只在collection为None时重连，避免频繁检查
+        if self.collection is None:
+            self._connect()
     
     def create_collection(self, collection_name: str = MILVUS_COLLECTION_NAME,
                          dimension: int = EMBEDDING_DIMENSION):
@@ -84,18 +100,31 @@ class MilvusManager:
         logger.info(f"   向量维度: {dimension}")
     
     def create_index(self):
-        """创建索引"""
+        """创建索引（支持HNSW和IVF_FLAT）"""
         if not self.collection:
             logger.error("请先创建集合")
             return
         
-        logger.info("创建索引...")
+        logger.info(f"创建索引 (类型: {MILVUS_INDEX_TYPE})...")
         
-        index_params = {
-            "index_type": MILVUS_INDEX_TYPE,
-            "metric_type": MILVUS_METRIC_TYPE,
-            "params": {"nlist": MILVUS_NLIST}
-        }
+        # 根据索引类型设置参数
+        if MILVUS_INDEX_TYPE == "HNSW":
+            # HNSW索引：更快的搜索速度，适合高召回率场景
+            index_params = {
+                "index_type": "HNSW",
+                "metric_type": MILVUS_METRIC_TYPE,
+                "params": {
+                    "M": MILVUS_HNSW_M,  # 每个节点的最大连接数
+                    "efConstruction": MILVUS_HNSW_EF_CONSTRUCTION  # 构建时的搜索宽度
+                }
+            }
+        else:
+            # IVF_FLAT索引：传统索引
+            index_params = {
+                "index_type": MILVUS_INDEX_TYPE,
+                "metric_type": MILVUS_METRIC_TYPE,
+                "params": {"nlist": MILVUS_NLIST}
+            }
         
         self.collection.create_index(
             field_name="embedding",
@@ -105,6 +134,8 @@ class MilvusManager:
         logger.info(f"✅ 索引创建成功")
         logger.info(f"   类型: {MILVUS_INDEX_TYPE}")
         logger.info(f"   度量: {MILVUS_METRIC_TYPE}")
+        if MILVUS_INDEX_TYPE == "HNSW":
+            logger.info(f"   M: {MILVUS_HNSW_M}, efConstruction: {MILVUS_HNSW_EF_CONSTRUCTION}")
     
     def insert_vectors(self, embeddings: np.ndarray, metadata: List[Dict],
                       batch_size: int = 1000):
@@ -155,6 +186,7 @@ class MilvusManager:
     
     def load_collection(self, collection_name: str = MILVUS_COLLECTION_NAME):
         """加载集合到内存"""
+        self._ensure_connection()
         if not self.collection:
             self.collection = Collection(collection_name)
         
@@ -163,7 +195,7 @@ class MilvusManager:
     
     def search(self, query_vectors: np.ndarray, top_k: int = RETRIEVAL_TOP_K) -> List[List[Dict]]:
         """
-        向量搜索
+        向量搜索（支持HNSW和IVF_FLAT）
         
         Args:
             query_vectors: 查询向量
@@ -172,14 +204,22 @@ class MilvusManager:
         Returns:
             搜索结果列表
         """
+        self._ensure_connection()
         if not self.collection:
             logger.error("请先加载集合")
             return []
         
-        search_params = {
-            "metric_type": MILVUS_METRIC_TYPE,
-            "params": {"nprobe": MILVUS_NPROBE}
-        }
+        # 根据索引类型设置搜索参数
+        if MILVUS_INDEX_TYPE == "HNSW":
+            search_params = {
+                "metric_type": MILVUS_METRIC_TYPE,
+                "params": {"ef": MILVUS_HNSW_EF}  # HNSW搜索时的搜索宽度
+            }
+        else:
+            search_params = {
+                "metric_type": MILVUS_METRIC_TYPE,
+                "params": {"nprobe": MILVUS_NPROBE}
+            }
         
         results = self.collection.search(
             data=query_vectors.tolist() if isinstance(query_vectors, np.ndarray) else query_vectors,

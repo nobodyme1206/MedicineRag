@@ -7,8 +7,10 @@ RAG系统核心 - 检索增强生成
 import time
 import hashlib
 import json
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
 import sys
 sys.path.append(str(Path(__file__).parent.parent.parent))
 
@@ -137,16 +139,15 @@ class RAGSystem:
                 logger.warning(f"混合检索器初始化失败: {e}")
                 self.use_hybrid = False
         
-        # 6. 初始化查询改写（如果启用）
-        if self.use_query_rewrite:
-            logger.info("初始化查询改写器...")
-            try:
-                from src.retrieval.query_rewriter import QueryRewriter
-                self.query_rewriter = QueryRewriter()
-                logger.info("✅ 查询改写器初始化成功")
-            except Exception as e:
-                logger.warning(f"查询改写器初始化失败: {e}")
-                self.use_query_rewrite = False
+        # 6. 初始化查询改写器（默认启用本地增强，不调用LLM）
+        logger.info("初始化查询改写器...")
+        try:
+            from src.rag.query_rewriter import QueryRewriter
+            self.query_rewriter = QueryRewriter(use_llm=False)  # 本地同义词扩展，速度快
+            logger.info("✅ 查询改写器初始化成功")
+        except Exception as e:
+            logger.warning(f"查询改写器初始化失败: {e}")
+            self.query_rewriter = None
         
         # 7. 初始化HyDE（如果启用）
         if self.use_hyde:
@@ -173,6 +174,25 @@ class RAGSystem:
             except Exception as e:
                 logger.warning(f"集成检索器初始化失败: {e}")
                 self.use_ensemble = False
+        
+        # 9. 初始化语义缓存
+        self.semantic_cache = None
+        try:
+            from config.config import SEMANTIC_CACHE_ENABLED, SEMANTIC_CACHE_THRESHOLD, SEMANTIC_CACHE_TTL
+            if SEMANTIC_CACHE_ENABLED and self.redis_cache:
+                from src.caching.redis_cache import SemanticCache
+                self.semantic_cache = SemanticCache(
+                    self.redis_cache,
+                    embedder=self.embedder,
+                    similarity_threshold=SEMANTIC_CACHE_THRESHOLD,
+                    ttl=SEMANTIC_CACHE_TTL
+                )
+                logger.info("✅ 语义缓存初始化成功")
+        except Exception as e:
+            logger.warning(f"语义缓存初始化失败: {e}")
+        
+        # 10. 初始化线程池（用于异步并发）
+        self._executor = ThreadPoolExecutor(max_workers=4)
         
         logger.info("✅ RAG系统初始化完成")
     
@@ -256,11 +276,12 @@ class RAGSystem:
                 self.redis_cache.set_query_cache(cache_key, final_results, ttl=3600)
             return final_results
         
-        # 1. 查询改写（如果启用）
-        if self.use_query_rewrite and self.query_rewriter:
-            logger.info(f"原始查询: {query}")
-            query = self.query_rewriter.expand_medical_query(query)
-            logger.info(f"扩展查询: {query}")
+        # 1. 查询标准化（医学术语标准化，展开缩写）
+        if self.query_rewriter:
+            normalized_query = self.query_rewriter.normalize_query(query)
+            if normalized_query != query:
+                logger.info(f"查询标准化: {query} -> {normalized_query}")
+                query = normalized_query
         
         # 2. HyDE假设文档嵌入（如果启用）
         if self.use_hyde and self.hyde:
@@ -284,14 +305,20 @@ class RAGSystem:
         
         candidates = results[0]
         
-        # 5. 混合检索（如果启用）
+        # 5. 混合检索（如果启用）- 使用RRF融合
         if self.use_hybrid and self.hybrid_searcher:
-            logger.info(f"使用混合检索融合BM25和向量结果...")
+            # 使用增强查询进行BM25检索
+            bm25_query = original_query
+            if self.query_rewriter:
+                bm25_query = self.query_rewriter.get_enhanced_query(original_query)
+            
+            logger.info(f"使用混合检索融合BM25和向量结果（RRF）...")
             candidates = self.hybrid_searcher.hybrid_search(
-                original_query,  # 使用原始查询做BM25
+                bm25_query,  # 使用增强查询做BM25
                 candidates,
                 alpha=0.6,  # 向量检索权重60%，BM25权重40%
-                top_k=search_top_k
+                top_k=search_top_k,
+                use_rrf=True  # 使用RRF融合，更稳定
             )
         
         # 6. Rerank重排序（如果启用）
@@ -634,6 +661,184 @@ Answer:"""
         }
         
         return result
+    
+    def vector_search(self, query: str, top_k: int = RETRIEVAL_TOP_K) -> List[Dict]:
+        """
+        纯向量检索（用于评估基线）
+        
+        Args:
+            query: 用户查询
+            top_k: 返回Top-K结果
+            
+        Returns:
+            检索结果列表
+        """
+        # Query向量化
+        if self.vector_cache:
+            query_embedding = self.vector_cache.get_or_compute_vector(query)
+        else:
+            query_embedding = self.embedder.encode_single(query)
+        query_embedding = query_embedding.reshape(1, -1)
+        
+        # 向量检索
+        results = self.milvus.search(query_embedding, top_k=top_k)
+        
+        if not results or not results[0]:
+            return []
+        
+        return results[0]
+    
+    # ==================== 异步并发检索 ====================
+    
+    async def async_retrieve(self, query: str, top_k: int = RETRIEVAL_TOP_K) -> List[Dict]:
+        """
+        异步检索（非阻塞）
+        
+        Args:
+            query: 用户查询
+            top_k: 返回Top-K结果
+            
+        Returns:
+            检索结果列表
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(self._executor, self.retrieve, query, top_k)
+    
+    async def async_answer(self, query: str, return_contexts: bool = True) -> Dict:
+        """
+        异步问答（非阻塞）
+        
+        Args:
+            query: 用户问题
+            return_contexts: 是否返回检索的上下文
+            
+        Returns:
+            问答结果字典
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._executor, 
+            lambda: self.answer(query, return_contexts)
+        )
+    
+    async def async_batch_answer(self, queries: List[str], max_concurrency: int = 4) -> List[Dict]:
+        """
+        异步批量问答（并发处理）
+        
+        Args:
+            queries: 问题列表
+            max_concurrency: 最大并发数
+            
+        Returns:
+            问答结果列表
+        """
+        semaphore = asyncio.Semaphore(max_concurrency)
+        
+        async def process_with_semaphore(query: str) -> Dict:
+            async with semaphore:
+                return await self.async_answer(query)
+        
+        tasks = [process_with_semaphore(q) for q in queries]
+        return await asyncio.gather(*tasks)
+    
+    def answer_with_semantic_cache(self, query: str, return_contexts: bool = True) -> Dict:
+        """
+        带语义缓存的问答（相似问题复用答案）
+        
+        Args:
+            query: 用户问题
+            return_contexts: 是否返回检索的上下文
+            
+        Returns:
+            问答结果字典
+        """
+        # 检查语义缓存
+        if self.semantic_cache:
+            cached = self.semantic_cache.get(query)
+            if cached:
+                logger.info(f"语义缓存命中: similarity={cached.get('similarity', 0):.3f}")
+                return {
+                    "query": query,
+                    "answer": cached["answer"],
+                    "contexts": cached.get("contexts", []) if return_contexts else [],
+                    "retrieval_time": 0,
+                    "generation_time": 0,
+                    "total_time": 0,
+                    "num_contexts": len(cached.get("contexts", [])),
+                    "cache_hit": True,
+                    "similarity": cached.get("similarity", 1.0)
+                }
+        
+        # 正常问答
+        result = self.answer(query, return_contexts)
+        
+        # 存入语义缓存
+        if self.semantic_cache:
+            self.semantic_cache.set(
+                query,
+                result["answer"],
+                result.get("contexts", []),
+                {"retrieval_time": result.get("retrieval_time", 0)}
+            )
+        
+        result["cache_hit"] = False
+        return result
+    
+    def prewarm_hot_queries(self, queries: List[str]) -> Dict[str, int]:
+        """
+        预热热门查询（预计算embedding并缓存答案）
+        
+        Args:
+            queries: 热门查询列表
+            
+        Returns:
+            预热统计
+        """
+        logger.info(f"🔥 预热热门查询: {len(queries)} 条")
+        
+        stats = {"embeddings": 0, "answers": 0, "errors": 0}
+        
+        for i, query in enumerate(queries):
+            try:
+                # 预热embedding
+                if self.vector_cache:
+                    self.vector_cache.get_or_compute_vector(query)
+                    stats["embeddings"] += 1
+                
+                # 预热答案（存入语义缓存）
+                if self.semantic_cache:
+                    result = self.answer(query, return_contexts=True)
+                    self.semantic_cache.set(
+                        query,
+                        result["answer"],
+                        result.get("contexts", [])
+                    )
+                    stats["answers"] += 1
+                
+                if (i + 1) % 10 == 0:
+                    logger.info(f"   预热进度: {i+1}/{len(queries)}")
+                    
+            except Exception as e:
+                logger.warning(f"预热失败 [{query[:30]}...]: {e}")
+                stats["errors"] += 1
+        
+        logger.info(f"✅ 预热完成: embeddings={stats['embeddings']}, answers={stats['answers']}")
+        return stats
+    
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """获取所有缓存统计"""
+        stats = {}
+        
+        if self.redis_cache:
+            stats["redis"] = self.redis_cache.get_stats()
+        
+        if self.vector_cache:
+            stats["vector_cache"] = self.vector_cache.get_stats()
+        
+        if self.semantic_cache:
+            stats["semantic_cache"] = self.semantic_cache.get_stats()
+        
+        return stats
 
 
 def main():
